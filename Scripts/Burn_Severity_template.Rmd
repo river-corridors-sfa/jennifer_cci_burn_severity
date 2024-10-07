@@ -1,0 +1,316 @@
+---
+title: "Burn_Severity_template"
+output: html_document
+date: "2024-10-04"
+editor_options: 
+  chunk_output_type: console
+---
+
+The purpose of this script is to get the average DNBR within a basin area using MTBS raster of burn severity and the watershed boundary. This code is adapted from Katie Wampler where you calculate the average dNBR of each fire perimeter within a watershed boundary and that average value is used to categorize the burn severity as "Low Severity", "Moderate Severity", "High Severity".
+
+Script inputs:
+  1) dNBR raster of fires
+  2) Shape files of each watershed boundary
+#######
+######
+
+
+
+
+The purpose of this script is to create a template of the burn severity workflow. 
+
+Script Workflow:
+
+Step 1) Load in Monitoring Trends Burn Severity (MTBS) layer of the burn: https://www.mtbs.gov/direct-download
+
+Step 2) Load in the Hydrologic Unit Code (HUC) of interest
+
+Step 3) Clip the watershed burned area
+
+Step 3) Calculate the average differenced Normalized Burn Ratio (dNBR) for the clipped watershed. 
+
+
+# Status: in progress
+
+# ==============================================================================
+# Author: Jake Cavaiani; Adapted code by Katie Wampler jake.cavaiani@pnnl.gov 
+# 04 October 2024
+# ==============================================================================
+
+## Load packages and set working directory
+```{r Jake/Mac}
+#for Jake/mac
+
+rm(list=ls(all=T)) #this clears your Environment
+
+# Load the packages
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(dplyr)
+library(here)
+library(nhdplusTools)
+library(furrr)
+library(readr)
+library(raster)
+library(exactextractr)
+library(purrr)
+library(stringr)
+library(forcats)
+library(lwgeom)
+
+```
+
+#### Burn Severity 
+# Convert crs function 
+# Katie Wampler wrote this function to make sure that the coordinate reference system (crs) is the same for both the burn shape file and the watershed shape file. 
+```{r crs function}
+convert_crs <- function (input, goal, type = "numeric", res = NULL) 
+{
+    stopifnot(class(input)[1] %in% c("sf", "RasterLayer"), class(goal)[1] %in% 
+        c("sf", "RasterLayer"), type %in% c("numeric", "categorical"))
+    if (raster::compareCRS(goal, input) == T) {
+        message("CRS already matches that of your goal object")
+        return(input)
+    }
+    else {
+        if (class(input)[1] == "RasterLayer") {
+            if (is.null(res)) {
+                if (class(goal)[1] == "RasterLayer") {
+                  res <- terra::res(goal)[1]
+                }
+                else {
+                  unit <- sf::st_crs(goal, parameters = TRUE)$units_gdal
+                  res <- ifelse(unit == "degree", 0.0003280119, 
+                    30)
+                }
+            }
+            method <- ifelse(type == "numeric", "bilinear", "ngb")
+            input_prj <- raster::projectRaster(input, crs = raster::crs(goal), 
+                method = method, res = res)
+        }
+        else {
+            input_prj <- sf::st_transform(input, raster::crs(goal))
+        }
+        return(input_prj)
+    }
+}
+
+```
+
+# Function to clip raster to a shapefile 
+```{r function}
+# This function will ensure the projection is the same between the raster the shapefile and then clip the raster to the basin boundry. It can return a raster (for further analysis) or a dataframe (for plotting)
+
+#' @param raster the raster you want to clip
+#' @param sf the shapefile you want to use to clip the raster
+#' @param type either 'numeric' or 'categorical' depending on if your raster is discrete or continuous values
+#' @param res the resolution of the projected raster, if not specified with default to 30m
+#' @param return either 'df' or 'raster' to specify the form of the returned raster
+#'
+#' @return if 'return' is df it will return the raster as a dataframe suitable 
+#' for plotting in ggplot2. If 'return' is raster it will return the raster as a rasterLayer object
+
+clean_raster <- function (raster, sf, type = "numeric", 
+                            res = NULL, return = "df") {stopifnot(class(raster) == "RasterLayer", class(sf)[1] == 
+                c("sf"), type %in% c("numeric", "categorical"), return %in% 
+                c("df", "raster"))
+    unit <- sf::st_crs(sf, parameters = TRUE)$units_gdal
+    buffer <- ifelse(unit == "degree", 0.1, 5000)
+    res <- ifelse(unit == "degree", 0.0003280119, 30)
+    method <- ifelse(type == "numeric", "bilinear", "ngb")
+    if (compareCRS(raster, sf) == T) {
+      raster_crop <- raster::crop(raster, sf)
+      raster_crop <- raster::mask(raster_crop, sf)
+      raster_df <- as.data.frame(raster::rasterToPoints(raster_crop))
+      colnames(raster_df) <- c("x", "y", "val")
+    }
+    else {
+      sf_prj <- convert_crs(sf::st_buffer(sf, dist = buffer), 
+                            raster)
+      raster_crop <- raster::crop(raster, sf_prj)
+      raster_crop <- raster::mask(raster_crop, sf_prj)
+      raster_prj <- raster::projectRaster(raster_crop, crs = crs(sf), 
+                                          method = method, res = res)
+      raster_crop <- raster::crop(raster_prj, sf)
+      raster_crop <- raster::mask(raster_crop, sf)
+      raster_df <- as.data.frame(raster::rasterToPoints(raster_crop))
+      colnames(raster_df) <- c("x", "y", "val")
+    }
+    if (return == "df") {
+      raster_df
+    }
+    else {
+      raster_crop
+    }
+} 
+
+```
+
+# Cochiti HUC
+```{r}
+# Read in HUC8 for the Cochiti site using the get_huc function. 
+# Cochiti HUC # 13020201
+cochiti_huc <- get_huc(id = 13020201,
+                       type = "huc08")
+
+# Specify the output file path 
+# I like to use the "here" function because it is a way to specify relative file paths so the file paths dont break across different computers. 
+output_path <- here("Input", "cochiti_huc.shp")
+
+# Write the HUC data to a shape file
+st_write(cochiti_huc, output_path, driver = "ESRI Shapefile") 
+# This will export the shape file to the specified path that we defined in line 160. If the shape files already exist, it will tell you. You can ignore this error. 
+
+# Read in the shape file that we just created. 
+cochiti_shape <- st_read(here("Input", "cochiti_huc.shp"))
+
+# Plotting the shape file. To plot spatial data we use "geom_sf"
+ggplot(data = cochiti_shape) +
+  geom_sf() +
+  theme_minimal()
+
+# Read in LAS CONCHAS fire shape file
+conchas_shape <- read_sf(here("Input", "LC_Fire", "nm3581210654120110626", "nm3581210654120110626_20110624_20120618_burn_bndy.shp"))
+# The MTBS naming is really gnarly. We have a script that changes the names to more human readable names but for the time being we can suffer just to get you familiar with the workflow. 
+
+# Plot the fire
+ggplot(data = conchas_shape) +
+  geom_sf(aes(fill = "red")) +
+  theme_minimal()
+
+# plot the HUC and fire on top of each other 
+ggplot() +
+  geom_sf(data = cochiti_shape, fill = "#56B4E9", alpha = 0.2, color = "black") +
+  geom_sf(data = conchas_shape, fill = "red", alpha = 0.2, color = "black") +
+  theme_minimal()
+
+# Pull the dnbrs for the Las Conchas Fire
+# The tif file type includes the burn severity information. 
+conchas_dnbr <- raster(here("Input", "LC_Fire", "nm3581210654120110626", "nm3581210654120110626_20110624_20120618_dnbr6.tif"))
+
+# Clip data to the watershed
+# The "clean_raster" function is the one that is created earlier in the script (Line 115)
+dnbr <- clean_raster(conchas_dnbr, conchas_shape, type = "numeric", return="raster")
+
+# Define directory for the plots
+output_directory <- here("Figures_Plots/")
+
+# Plot to verify 
+png(filename = paste0(output_directory, "Las_Conchas_dnbr.png"))
+plot(dnbr, main = paste("dNBR for Las Conchas")) # This should be a plot of the fire perimeter with dnbr values
+dev.off()
+
+
+# Clean and clip raster to the site boundary
+basin_dnbr <- clean_raster(dnbr, cochiti_shape, type = "numeric", return = "raster")
+
+# This should be a dnbr plot of the portion of the watershed that is burned  
+png(filename = paste0(output_directory, "cochiti_clipped_dnbr.png"))
+plot(basin_dnbr, main = paste("dNBR for Cochiti")) # This should be a plot of the fire perimeter with dnbr values
+dev.off()
+
+#extract data
+# This is calculating the mean_dnbr value for the portion of the watershed that is burned. 
+# This value will be used to categorize the severity as Low, Moderate, or High. 
+mean_dnbr <- exactextractr::exact_extract(dnbr,cochiti_shape, "mean",
+                                           progress=F)
+
+mean_dnbr
+# HUC8 mean DNBR 3.788704
+
+
+```
+
+# Interpolation script 
+```{r}
+
+
+
+```
+
+
+
+======================================================================================================================
+=============================== FUTURE SCRIPT WORKFLOW ==============================================================
+======================================================================================================================
+
+# Watershed DNBR values
+```{r for loop}
+# Define the fire thresholds for burn severity
+# Fire_thresholds <- tibble(
+#   zone = c(1:5),
+#   min = c(-100, 100, 270, 440, 660),
+#   max = c(99, 269, 439, 659, 1300),
+#   fire_name = "retreat_fire",
+#   burn_severity = c("Unburned", "Low", "Moderate_Low", "Moderate_High", "High")
+# )
+# 
+# # Read the Oak_Creek_tribs.shp file with multiple sites
+# oak_creek_tribs_shape <- st_read(here("Retreat_Fire_2024", "output_for_analysis", "02_Retreat_Fire_Site_Selection", "Oak_Creek_tribs.shp"))
+# 
+# # List of unique site names within Oak_Creek_tribs.shp
+# site_names <- unique(oak_creek_tribs_shape$site)
+# 
+# # Initialize empty results dataframe
+# oak_creek_tribs_results <- tibble(site = character(), 
+#                                   mean_dnbr = numeric(), 
+#                                   burn_severity = character())
+# 
+# # Define directory for the plots
+# output_directory <- here("Retreat_Fire_2024", "plots", "burn_severity/")
+# 
+# # Loop through each site within Oak_Creek_tribs.shp
+# for (site_name in site_names) {
+#   
+#   # Filter the shapefile by site
+#   site_shape <- oak_creek_tribs_shape %>%
+#     filter(site == site_name)
+# 
+# 
+#   # Plot to verify filtering
+#   ggplot() +
+#     geom_sf(data = site_shape, fill = "#56B4E9", alpha = 0.2, color = "black") +
+#     theme_minimal()
+#   
+#   # Clean and clip raster to the site boundary
+#   basin_dnbr <- clean_raster(dnbr, site_shape, type = "numeric", return = "raster")
+#   
+#   # Plot to verify clipping
+#   png(filename = paste0(output_directory, site_name, "_clipping_plot.png"))
+#   plot(basin_dnbr, main = paste("dNBR for Site:", site_name))
+#   dev.off()
+#   
+#   # Check and transform CRS if necessary
+#   if (compareCRS(dnbr, site_shape) == FALSE) {
+#     site_shape <- st_transform(site_shape, crs(dnbr))
+#   }
+#   
+#   # Extract mean dNBR for the site
+#   mean_dnbr <- exactextractr::exact_extract(dnbr, site_shape, "mean", progress = FALSE)
+#   
+#   # Categorize the mean dNBR based on fire thresholds
+#   burn_severity <- Fire_thresholds %>%
+#     filter(min <= mean_dnbr & max >= mean_dnbr) %>%
+#     dplyr::select(burn_severity) %>%
+#     pull()
+#   
+#   # Append the results to the results dataframe
+#   oak_creek_tribs_results <- oak_creek_tribs_results %>%
+#     add_row(site = site_name, 
+#             mean_dnbr = mean_dnbr, 
+#             burn_severity = burn_severity)
+# }
+# 
+# # View the final results
+# oak_creek_tribs_results
+# 
+# write_csv(oak_creek_tribs_results, here("Retreat_Fire_2024", "output_for_analysis", "01_Identify_impacted_watersheds", "oak_creek_tribs_dNBR.csv"))
+# 
+
+# ak_Creek_tribs_geospatial <- read_csv("Retreat_Fire_2024/output_for_analysis/02_Retreat_Fire_Site_Selection/Oak_Creek_tribs_geospatial.csv")
+```
+
+
+
