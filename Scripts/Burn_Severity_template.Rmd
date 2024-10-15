@@ -43,6 +43,9 @@ Step 3) Calculate the average differenced Normalized Burn Ratio (dNBR) for the c
 
 rm(list=ls(all=T)) #this clears your Environment
 
+# PR: if you get a "there is no package called "..." error, use code below
+# install.packages("exactextractr")
+
 # Load the packages
 library(ggplot2)
 library(sf)
