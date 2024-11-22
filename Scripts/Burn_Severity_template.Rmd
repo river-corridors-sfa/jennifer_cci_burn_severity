@@ -228,7 +228,39 @@ mean_dnbr
 
 # Interpolation script 
 ```{r}
+library(raster)
+library(pracma)
+library(MBA)
+library(dplyr)
 
+#load raster 
+conchas_dnbr <- raster(here("Input", "LC_Fire", "nm3581210654120110626", "nm3581210654120110626_20110624_20120618_dnbr6.tif"))
+  
+#make large negatives into NA's 
+fire_na <- reclassify(conchas_dnbr, cbind(-32769, -32767, NA), right=FALSE)
+  
+#view raster 
+plot(fire_na)
+  
+#interpolate 
+# Convert raster to a data frame of coordinates and values
+xyz <- as.data.frame(fire_na, xy = TRUE)
+xy.est <- xyz[is.na(xyz[,3]) == T,1:2]
+xyz <- xyz[is.na(xyz[,3]) == F,]
+colnames(xyz) <- c("x", "y", "z")
+    
+# Perform interpolation using mba.points
+interp_result <- mba.points(
+    xyz, #existing data
+    xy.est, #missing data
+    )
+  
+# Convert interpolated results back to a raster
+fire_filled <- rbind(xyz, interp_result$xyz.est)
+fire_filled <- rasterFromXYZ(fire_filled) 
+  
+#check 
+plot(fire_filled)
 
 
 ```
