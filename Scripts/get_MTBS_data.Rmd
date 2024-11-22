@@ -1,0 +1,153 @@
+---
+title: "get_MTBS_data"
+output: html_document
+date: "2024-11-22"
+editor_options: 
+  chunk_output_type: console
+---
+
+The purpose of this script is to read in MTBS data using R rather than downloading individual files 
+
+# Status: in progress
+
+# ==============================================================================
+# Author: Jake Cavaiani; jake.cavaiani@pnnl.gov 
+# 22 November 2024
+# ==============================================================================
+
+# Load Libraries 
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(rgdal)
+library(raster)
+library(here)
+library(sf)
+```
+
+
+```{r load in sites list}
+# I want to do this using a url to read in the file but I am getting an HTTP error 404. 
+# Need to troubleshoot
+# URL of the raw CSV file on GitHub
+url <- "https://raw.githubusercontent.com/river-corridors-sfa/pr_streampulse_wildfire/refs/heads/main/figures/241114_candidate_plots/manual_subset/manually_selected_sites.csv?token=GHSAT0AAAAAAC24HHTRDU2PYIYJDYXUABSCZ2A2SKA"
+
+# Read in the data
+data <- read_csv(url)
+# 
+
+head(data)
+
+```
+
+```{r Load in CONUS dNBR}
+# Pull the dnbrs for CONUS for 2020
+# The tif file type includes the burn severity information.
+raster_file <- raster(here("Input", "MTBS_BSmosaics", "2020", "mtbs_CONUS_2020", "mtbs_CONUS_2020.tif"))
+
+# Inspect attribute table of a tif file. 
+print(raster_file)
+
+# Basic plot (if the raster is not too large)
+plot(raster_file)
+
+```
+
+# Chat GPT 1.0
+```{r}
+# Assuming `data` is your dataframe
+fire_id_of_interest <- "OR4472312167920200817"  # replace with the actual fire_id you want
+filtered_data <- data %>% filter(fire_id == fire_id_of_interest)
+# Example of getting bounding box from latitude and longitude if available in your dataframe
+bbox <- c(
+  xmin = min(filtered_data$burn_bnd_lon),
+  xmax = max(filtered_data$burn_bnd_lon),
+  ymin = min(filtered_data$burn_bnd_lat),
+  ymax = max(filtered_data$burn_bnd_lat)
+)
+
+if (!is.null(bbox)) {
+  extent_to_crop <- extent(bbox)
+  cropped_raster <- crop(raster_file, extent_to_crop)
+}
+
+plot(cropped_raster)
+
+
+# TAKE 2
+
+print(extent(raster_file))
+print(extent_to_crop)
+# Different extents 
+
+# Create a sf object from coordinates
+coordinates <- data.frame(lon = filtered_data$burn_bnd_lon, lat = filtered_data$burn_bnd_lat)
+
+# Transform to a spatial points data frame
+coords_sf <- st_as_sf(coordinates, coords = c("lon", "lat"), crs = 4326)  # Assuming lat/lon are in WGS84 (EPSG:4326)
+
+# Define the raster's CRS (it seems like Albers Equal Area with NAD83 based on your description)
+target_crs <- "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+
+# Transform coordinates to the raster's CRS
+coords_transformed <- st_transform(coords_sf, crs = target_crs)
+
+# Get transformed bounding box
+transformed_bbox <- st_bbox(coords_transformed)
+
+# Use st_bbox to create an extent object for cropping
+extent_to_crop <- extent(as.numeric(transformed_bbox[c("xmin", "xmax", "ymin", "ymax")]))
+
+cropped_raster <- crop(raster_file, extent_to_crop)
+plot(cropped_raster)
+
+# TAKE 3
+raster_crs <- crs(raster_file)
+print(raster_crs)
+
+library(sf)
+library(raster)
+
+# Create a simple feature from latitude and longitude
+coordinates <- data.frame(
+  lon = filtered_data$burn_bnd_lon,
+  lat = filtered_data$burn_bnd_lat
+)
+
+# Assume the data are originally in a geographic coordinate system (WGS84)
+sf_coords <- st_as_sf(coordinates, coords = c("lon", "lat"), crs = 4326)
+
+# Transform the simple feature to match the raster's CRS
+# The printout confirmed it's an Albers Equal Area, with NAD83, thus using the WKT or Proj.4 string provided.
+sf_transformed <- st_transform(sf_coords, crs = raster_crs)
+
+# Calculate a bounding box from the transformed simple feature
+transformed_bbox <- st_bbox(sf_transformed)
+
+# Convert the bounding box to an instance of `extent`
+extent_to_crop <- extent(transformed_bbox$xmin, transformed_bbox$xmax, transformed_bbox$ymin, transformed_bbox$ymax)
+
+print("Check the transformed spatial extent:")
+print(extent_to_crop)
+
+# Attempt to crop using the computed extent
+cropped_raster <- crop(raster_file, extent_to_crop)
+
+# Plot the resulting cropped raster
+plot(cropped_raster)
+
+# Ensure visualization is appropriate (adjust plot window as needed)
+
+```
+
+
+
+
+
+
+
+
+
+
+
