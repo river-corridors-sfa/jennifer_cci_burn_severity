@@ -1,0 +1,69 @@
+---
+title: "CONUS_dam_map_JSC"
+output: html_document
+date: "2024-11-27"
+editor_options: 
+  chunk_output_type: console
+---
+
+The purpose of this script is to plot the list of dams on a Continuous United States (CONUS) map
+
+Script inputs:
+  1) CONUS shape file
+  2) Dam data frame. 
+  
+# Load Libraries
+```{r setup, include=TRUE, echo = T, warning = F, comment = F, message = FALSE}
+rm(list = ls())
+library(sf)
+library(tidyverse)
+library(here)
+library(rnaturalearth)
+
+```
+
+
+# Read in CONUS map 
+```{r}
+## Set a common crs
+common_crs = 4326
+
+## Coordinate projection for coord_sf to make things look cool
+coord_sf_crs = "+proj=aea +lat_1=25 +lat_2=50 +lon_0=-100"
+
+## US maps
+us_map <- ne_states(country = "united states of america", 
+                    returnclass = "sf") %>% 
+  filter(gn_name != "Hawaii") %>% 
+  mutate(st_abb = str_sub(gn_a1_code, 4,5)) %>% 
+  dplyr::select(gn_name, st_abb)
+
+conus_map <- us_map %>% 
+  filter(gn_name != "Alaska") 
+
+## Set ggplot theme
+theme_set(theme_bw())
+
+# # 2. Pull in Dam site data -----------------------------------------
+# 
+## I put place holders in for everything here. Replace with your stuff
+JENNIFER_DAM_DATAFRAME <- read_csv("Jennifer/directory/of/dams.csv") %>% 
+  drop_na() %>% # Drop any NAs
+  st_as_sf(coords = c("longitude", "latitude"), crs = common_crs) # this will make your lat/long coordinates the same coordinate reference system as the CONUS map which is needed to make sure everything lines up 
+
+ggplot() + 
+  geom_sf(data = conus_map) +
+  # This is your dam layer
+  geom_sf_label(data = JENNIFER_DAM_DATAFRAME)
+
+# We can make this prettier beyond this but this is what we need at the least. 
+
+
+```
+
+
+
+
+
+
+
